@@ -8,3 +8,8 @@
 
 Formerly known as `gigawatt-common'.
 
+## TODO
+
+* [ ] Fix upstart serviceifier to pickup and preserve flags.
+* [ ] Update upstart serviceifier refuse to install as root?
+
