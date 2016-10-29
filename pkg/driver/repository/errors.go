@@ -3,7 +3,7 @@ package repository
 import (
 	"strings"
 
-	"github.com/jaytaylor/gorm"
+	"github.com/jinzhu/gorm"
 )
 
 var gormNotFoundErrorString = gorm.ErrRecordNotFound.Error()

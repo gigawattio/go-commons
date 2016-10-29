@@ -1,8 +1,22 @@
 language: go
+
 go:
   - tip
   - 1.7
   - 1.6
+
+services:
+  - postgresql
+
+addons:
+  postgresql: 9.4
+
+before_script:
+  - (command -v pg_ctl && pg_ctl start || :) && psql -c 'create database "TestGigawattIO";' -U postgres
+
+env:
+  - DB_DRIVER=postgres
+
 notifications:
   email:
     on_success: change

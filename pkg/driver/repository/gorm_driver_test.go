@@ -2,46 +2,62 @@ package repository
 
 import (
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gigawattio/go-commons/pkg/gw"
-	"gigawatt-server/config"
-	"gigawatt-server/infrastructure/gwtesting/tools"
+	"github.com/gigawattio/go-commons/pkg/driver/repository/gormlib"
+	"github.com/gigawattio/go-commons/pkg/testlib"
 
-	"github.com/jaytaylor/gorm"
+	log "github.com/Sirupsen/logrus"
+	"github.com/jinzhu/gorm"
 )
 
 type (
 	Tag struct {
 		Id       int64
-		Name     string    `sql:"not null;unique;"`
+		Name     string    `gorm:"not null;unique;"`
 		MyDatums []MyDatum `gorm:"many2many:my_datum_tag;"`
 	}
 
 	MyDatum struct {
 		Id         int64
-		Name       string    `sql:"not null;unique;"`
-		HomePlanet string    `sql:"type:varchar(255);"`
-		Metadata   string    `sql:"type:text"`
-		CreatedAt  time.Time `sql:"type:timestamp without time zone;not null;DEFAULT:current_timestamp;"`
-		UpdatedAt  time.Time `sql:"type:timestamp without time zone;not null;DEFAULT:current_timestamp;" gorm:"update_time_stamp_when_update:yes;"`
+		Name       string    `gorm:"not null;unique;"`
+		HomePlanet string    `gorm:"type:varchar(255);"`
+		Metadata   string    `gorm:"type:text"`
+		CreatedAt  time.Time `gorm:"type:timestamp without time zone;not null;DEFAULT:current_timestamp;"`
+		UpdatedAt  time.Time `gorm:"type:timestamp without time zone;not null;DEFAULT:current_timestamp;" gorm:"update_time_stamp_when_update:yes;"`
 		Tags       []Tag     `gorm:"many2many:my_datum_tag;"`
 	}
 
 	MyDatumTag struct {
-		MyDatumId int64 `sql:"type:bigint REFERENCES \"my_datum\" (\"id\");not null;"`
-		TagId     int64 `sql:"type:bigint REFERENCES \"tag\" (\"id\");not null;"`
+		MyDatumId int64 `gorm:"type:bigint REFERENCES \"my_datum\" (\"id\");not null;"`
+		TagId     int64 `gorm:"type:bigint REFERENCES \"tag\" (\"id\");not null;"`
 	}
 )
 
-var dbDriverName = "postgres"
+var (
+	dbDriverName        = "postgres"
+	dbConnectionStrings = []string{"dbname=TestGigawattIO"}
 
-var entities = []interface{}{
-	&Tag{},
-	&MyDatum{},
-	&MyDatumTag{},
+	entities = []interface{}{
+		&Tag{},
+		&MyDatum{},
+		&MyDatumTag{},
+	}
+)
+
+func init() {
+	if dbDriverNameOverride := os.Getenv("DB_DRIVER"); len(dbDriverNameOverride) > 0 {
+		log.Infof("dbDriverName override detected, old-value=%q new-value=%q", dbDriverName, dbDriverNameOverride)
+		dbDriverName = dbDriverNameOverride
+	}
+	if dbConnectionStringsOverride := strings.Split(os.Getenv("DB_CONNECTION_STRINGS"), ","); len(os.Getenv("DB_CONNECTION_STRINGS")) > 0 { // NB: split("") => []string{""} with len=1.
+		log.Infof("dbConnectionStrings override detected, old-value=%v new-value=%v", dbConnectionStrings, dbConnectionStringsOverride)
+		dbConnectionStrings = dbConnectionStringsOverride
+	}
 }
 
 func initSchema(_ string, db *gorm.DB) error {
@@ -51,7 +67,7 @@ func initSchema(_ string, db *gorm.DB) error {
 	}
 
 	for _, entity := range entities {
-		res0 := gw.DbFnWithRetry(func() *gorm.DB { return db.AutoMigrate(entity) })
+		res0 := gormlib.DbFnWithRetry(func() *gorm.DB { return db.AutoMigrate(entity) })
 		if res0.Error != nil {
 			return res0.Error
 		}
@@ -92,7 +108,7 @@ func initSchema(_ string, db *gorm.DB) error {
 		},
 	}
 	for _, uidx := range uniqueIndexes {
-		res0 := gw.DbFnWithRetry(func() *gorm.DB { return db.Model(uidx.model).AddUniqueIndex(uidx.name, uidx.columns...) })
+		res0 := gormlib.DbFnWithRetry(func() *gorm.DB { return db.Model(uidx.model).AddUniqueIndex(uidx.name, uidx.columns...) })
 		if err := res0.Error; err != nil {
 			return err
 		}
@@ -100,20 +116,29 @@ func initSchema(_ string, db *gorm.DB) error {
 	return nil
 }
 
-func reset(t *testing.T) *GormRepositoryDriver {
-	config.InitTestConfig("/tmp")
-	if err := tools.CompleteReset(dbDriverName, config.DbConnectionStrings[0], initSchema, config.GitStorageDirectory); err != nil {
-		t.Fatalf("error during reset: %s", err)
+var dbNameExpr = regexp.MustCompile(`dbname=[^ ]+`)
+
+func reset(t *testing.T, dbDriverName string, dbConnectionStrings []string) *GormRepositoryDriver {
+	patchedDbConnectionStrings := make([]string, len(dbConnectionStrings))
+	for i, dbConnectionString := range dbConnectionStrings {
+		// fmt.Fprintf(os.Stderr, "BEFORE: %s (AND crt=%v)\n", dbConnectionString, testlib.CurrentRunningTest())
+		patchedDbConnectionStrings[i] = strings.TrimSpace(dbNameExpr.ReplaceAllString(dbConnectionString, "") + " dbname=" + testlib.CurrentRunningTest())
+		// fmt.Fprintf(os.Stderr, "AFTER : %s\n", patchedDbConnectionStrings[i])
 	}
-	driver, err := NewGormRepositoryDriver(dbDriverName, config.DbConnectionStrings)
+
+	if err := CompleteReset(dbDriverName, patchedDbConnectionStrings, initSchema); err != nil {
+		t.Fatalf("Fatal error during reset: %s", err)
+	}
+	driver, err := NewGormRepositoryDriver(dbDriverName, patchedDbConnectionStrings)
 	if err != nil {
 		t.Fatal(err)
 	}
+	driver.ConnectorFunc = DbConnectForTesting
 	return driver
 }
 
-func Test_GetOrCreate(t *testing.T) {
-	driver := reset(t)
+func TestGetOrCreate(t *testing.T) {
+	driver := reset(t, dbDriverName, dbConnectionStrings)
 	char1 := &MyDatum{Name: "Turd Ferguson"}
 	if _, err := driver.GetOrCreate(char1); err != nil {
 		t.Fatal(err)
@@ -129,13 +154,13 @@ func Test_GetOrCreate(t *testing.T) {
 		t.Fatalf("Expected second record id to match first, but char1.id=%v and char2.id=%v", char1.Id, char2)
 	}
 	char3 := &MyDatum{Name: "Turd Ferguson"}
-	if err := driver.Save(char3); err == nil || !strings.Contains(strings.ToLower(err.Error()), "duplicate key violates unique constraint") {
-		t.Fatalf("Expected `duplicate key violated unique constraint' error but instead found err=%v", err)
+	if err := driver.Save(char3); err == nil || !regexp.MustCompile(`duplicate key.*violates unique constraint`).MatchString(strings.ToLower(err.Error())) {
+		t.Fatalf("Expected error matching `duplicate key.*violates unique constraint' error but instead found err=%s", err)
 	}
 }
 
-func Test_UpdateSingle(t *testing.T) {
-	driver := reset(t)
+func TestUpdateSingle(t *testing.T) {
+	driver := reset(t, dbDriverName, dbConnectionStrings)
 	commonMeta := "single"
 	iggy := &MyDatum{Name: "Iggy Azalea", Metadata: commonMeta}
 	if err := driver.Save(iggy); err != nil {
@@ -160,8 +185,8 @@ func Test_UpdateSingle(t *testing.T) {
 	}
 }
 
-func Test_MultiDelete(t *testing.T) {
-	driver := reset(t)
+func TestMultiDelete(t *testing.T) {
+	driver := reset(t, dbDriverName, dbConnectionStrings)
 	testCases := [][]string{
 		[]string{"a"},
 		[]string{"a", "b"},
@@ -201,8 +226,8 @@ func Test_MultiDelete(t *testing.T) {
 	}
 }
 
-func Test_M2m(t *testing.T) {
-	driver := reset(t)
+func TestM2m(t *testing.T) {
+	driver := reset(t, dbDriverName, dbConnectionStrings)
 
 	// Create and store some taggable items.
 	myDatums := []interface{}{}
@@ -268,49 +293,8 @@ func Test_M2m(t *testing.T) {
 	}
 }
 
-// func Test_RawScans(t *testing.T) {
-// 	driver, err := NewGormRepositoryDriver(config.DbConnectionStrings)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-
-// 	// Ensure bad/invalid/mismatched queries emit errors.
-// 	{
-// 		var res []int64
-// 		if err := driver.Raw(&res, "SELECT 1, 2"); err == nil {
-// 			t.Errorf("Expected an error for bad query but err was nil")
-// 		}
-// 	}
-
-// 	testCases := []struct {
-// 		res      interface{}
-// 		stmt     string
-// 		expected interface{}
-// 	}{
-// 		{
-// 			res:      [][]int64{},
-// 			stmt:     "SELECT 1, 2, 4, 8",
-// 			expected: [][]int64{[]int64{1, 2, 4, 8}},
-// 		},
-// 	}
-// 	for i, testCase := range testCases {
-// 		if err := driver.Raw(&testCase.res, testCase.stmt); err != nil {
-// 			t.Errorf("i=%v Expected query to succeed but got err=%s", i, err)
-// 		}
-// 		// if ln := len(testCase.res); ln != 1 {
-// 		// 	t.Fatalf("i=%v Expected len(res)=1 but actual=%v", i, ln)
-// 		// }
-// 		// if expected, actual := len(testCase.expected), len(testCase.res[0]); actual != expected {
-// 		// 	t.Fatalf("i=%v Expected len(res[0])=4 but actual=%v", i, ln)
-// 		// }
-// 		if expected, actual := fmt.Sprintf("%+v", testCase.expected), fmt.Sprintf("%+v", testCase.res); actual != expected {
-// 			t.Fatalf("i=%v Expected res=%v but actual=%v", i, expected, actual)
-// 		}
-// 	}
-// }
-
-func Test_RawScans(t *testing.T) {
-	driver, err := NewGormRepositoryDriver(dbDriverName, config.DbConnectionStrings)
+func Tes_RawScans(t *testing.T) {
+	driver, err := NewGormRepositoryDriver(dbDriverName, dbConnectionStrings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,13 +413,16 @@ func Test_RawScans(t *testing.T) {
 	}
 }
 
-func Test_RawQueries(t *testing.T) {
-	driver := reset(t)
+func TestRawQueries(t *testing.T) {
+	driver := reset(t, dbDriverName, dbConnectionStrings)
 
 	n := 50
 	recs := make([]interface{}, n)
 	for i := 0; i < n; i++ {
-		recs[i] = &MyDatum{Name: fmt.Sprintf("Name%v", i)}
+		recs[i] = &MyDatum{
+			Name:       fmt.Sprintf("Name%v", i),
+			HomePlanet: "Zurg",
+		}
 	}
 	if err := driver.SaveMultiple(recs...); err != nil {
 		t.Fatalf("Problem saving n=%v MyDatum records: %s", n, err)
@@ -506,7 +493,37 @@ func Test_RawQueries(t *testing.T) {
 
 	{
 		var result map[string]interface{}
-		if err := driver.Raw(&result, `SELECT "id", "name" FROM "my_datum" ORDER BY "id" ASC LIMIT 1`); err != nil {
+		if err := driver.Raw(&result, `SELECT "id", "name", "home_planet" FROM "my_datum" ORDER BY "id" ASC LIMIT 1`); err != nil {
+			t.Fatal(err)
+		}
+
+		if l := len(result); l != 3 {
+			t.Errorf("Expected result len=2, but actual result len=%v (result=%+v)", l, result)
+		}
+
+		// Validate "id".
+		if _, ok := result["id"]; !ok {
+			t.Errorf("Expected result map to contain the key 'id', but it wasn't found (result=%+v)", result)
+		} else if _, ok := result["id"].(int64); !ok {
+			t.Errorf("Expected result map to contain the key 'id' of type int64, but the cast failed (result=%T/%+v)", result, result)
+		} else if id, _ := result["id"].(int64); id != int64(1) {
+			t.Errorf("Expected result['id'] = int64(1), but instead actual=%T/%+v", id, id)
+		}
+
+		// Validate "name".
+		if _, ok := result["name"]; !ok {
+			t.Errorf("Expected result map to contain the key 'name', but it wasn't found (result=%+v)", result)
+		}
+
+		// Validate "home_planet".
+		if _, ok := result["home_planet"]; !ok {
+			t.Errorf("Expected result map to contain the key 'home_planet', but it wasn't found (result=%+v)", result)
+		}
+	}
+
+	{
+		var result map[string][]byte
+		if err := driver.Raw(&result, `SELECT "name", "home_planet" FROM "my_datum" LIMIT 1`); err != nil {
 			t.Fatal(err)
 		}
 
@@ -515,21 +532,17 @@ func Test_RawQueries(t *testing.T) {
 		}
 
 		// Validate "name".
-		if _, ok := result["name"]; !ok {
+		if name, ok := result["name"]; !ok {
 			t.Errorf("Expected result map to contain the key 'name', but it wasn't found (result=%+v)", result)
-		} else if _, ok := result["name"].([]byte); !ok {
-			t.Errorf("Expected result map to contain the key 'name' of type []byte, but the cast failed (result=%+v)", result)
-		} else if name, _ := result["name"].([]byte); string(name) != "Name0" {
+		} else if string(name) != "Name0" {
 			t.Errorf("Expected result['name'] = 'Name0', but instead actual bytes=%+v string='%v'", name, string(name))
 		}
 
-		// Validate "id".
-		if _, ok := result["id"]; !ok {
-			t.Errorf("Expected result map to contain the key 'id', but it wasn't found (result=%+v)", result)
-		} else if _, ok := result["id"].(int64); !ok {
-			t.Errorf("Expected result map to contain the key 'id' of type int64, but the cast failed (result=%+v)", result)
-		} else if id, _ := result["id"].(int64); id != int64(1) {
-			t.Errorf("Expected result['id'] = int64(1), but instead actual=%T/%+v", id, id)
+		// Validate "home_planet".
+		if homePlanet, ok := result["home_planet"]; !ok {
+			t.Errorf("Expected result map to contain the key 'home_planet', but it wasn't found (result=%+v)", result)
+		} else if string(homePlanet) != "Zurg" {
+			t.Errorf("Expected result['home_planet'] = 'Zurg', but instead actual bytes=%+v string='%v'", homePlanet, string(homePlanet))
 		}
 	}
 
@@ -555,8 +568,9 @@ func Test_RawQueries(t *testing.T) {
 		}
 	}
 }
-func Test_TableName(t *testing.T) {
-	driver := reset(t)
+
+func TestTableName(t *testing.T) {
+	driver := reset(t, dbDriverName, dbConnectionStrings)
 	if tableName := driver.TableName(&MyDatum{}); tableName != "my_datum" {
 		t.Errorf("Expected table name='my_datum' but actual='%v'", tableName)
 	}

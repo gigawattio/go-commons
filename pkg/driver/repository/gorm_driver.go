@@ -15,21 +15,29 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gigawattio/go-commons/pkg/driver/repository/gormlib"
 	"github.com/gigawattio/go-commons/pkg/errorlib"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/jinzhu/gorm"
 )
 
-// GormRepositoryDriver implements the `interfaces.RepositoryDriver` storage driver interface.
-type GormRepositoryDriver struct {
-	driverName        string
-	connectionStrings *ring.Ring
-	currentDb         *gorm.DB
-	lock              sync.Mutex
-}
+type (
+	DbConnectorFunc func(driver string, connectionString string) (*gorm.DB, error)
+
+	// GormRepositoryDriver implements the `interfaces.RepositoryDriver` storage driver interface.
+	GormRepositoryDriver struct {
+		ConnectorFunc     DbConnectorFunc
+		driverName        string
+		connectionStrings *ring.Ring
+		currentDb         *gorm.DB
+		lock              sync.Mutex
+	}
+)
 
 func NewGormRepositoryDriver(driverName string, connectionStrings []string) (*GormRepositoryDriver, error) {
 	driver := &GormRepositoryDriver{
+		ConnectorFunc:     gormlib.DbConnect,
 		driverName:        driverName,
 		connectionStrings: ring.New(len(connectionStrings)),
 	}
@@ -37,7 +45,6 @@ func NewGormRepositoryDriver(driverName string, connectionStrings []string) (*Go
 		driver.connectionStrings.Value = connectionString
 		driver.connectionStrings = driver.connectionStrings.Next()
 	}
-	log.Notice("Next connection string=%v", driver.connectionStrings.Value.(string))
 	return driver, nil
 }
 
@@ -58,7 +65,8 @@ func (driver *GormRepositoryDriver) db() (*gorm.DB, error) {
 	defer driver.lock.Unlock()
 
 	if driver.currentDb == nil {
-		db, err := DbConnect(driver.driverName, driver.connectionStrings.Value.(string))
+		log.Debugf("Next connection string=%s", driver.connectionStrings.Value)
+		db, err := driver.ConnectorFunc(driver.driverName, driver.connectionStrings.Value.(string))
 		driver.connectionStrings = driver.connectionStrings.Next()
 		if err != nil {
 			return nil, err
@@ -900,7 +908,16 @@ func (driver *GormRepositoryDriver) Raw(result interface{}, query string, args .
 					return
 				}
 				for i, column := range columns {
-					(*assign)[column] = values[i]
+					switch values[i].(type) {
+					case []uint8: // Special case, coerce to []byte and then string.
+						bs := make([]byte, len(values[i].([]uint8)))
+						for j := 0; j < len(bs); j++ {
+							bs[j] = values[i].([]uint8)[j]
+						}
+						(*assign)[column] = bs
+					default:
+						(*assign)[column] = values[i]
+					}
 				}
 			}
 
@@ -1088,7 +1105,7 @@ func (driver *GormRepositoryDriver) Raw(result interface{}, query string, args .
 			}
 
 		default:
-			log.Debug("gorm driver: unsupported result type: %T, falling back to gorm.Scan", result)
+			log.Debugf("gorm driver: unsupported result type: %T, falling back to gorm.Scan", result)
 			if err = res.Scan(result).Error; err != nil {
 				return
 			}

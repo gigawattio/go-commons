@@ -1,10 +1,11 @@
-package repository
+package gormlib
 
 import (
 	"fmt"
 	"strings"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/jinzhu/gorm"
 	_ "github.com/lib/pq" // Imported for postgres-driver lib side effects.
 )
@@ -106,7 +107,7 @@ func DbExecWithRetry(db *gorm.DB, sql string, values ...interface{}) *gorm.DB {
 	for {
 		if res0 = db.Exec(sql, values...); res0.Error != nil {
 			if IsRetriableDbError(res0.Error) {
-				log.Info("ExecWithRetry: retriable error detected (failcount=%v err=%s), will retry query: %s", attemptNumber, res0.Error, sql)
+				log.Infof("ExecWithRetry: retriable error detected (failcount=%v err=%s), will retry query: %s", attemptNumber, res0.Error, sql)
 				attemptNumber += 1
 				time.Sleep(time.Duration(attemptNumber*10) * time.Millisecond)
 				continue
@@ -137,7 +138,7 @@ func DbFnWithRetry(fn func() *gorm.DB) *gorm.DB {
 		}
 		if res0 = fn(); res0 != nil && res0.Error != nil {
 			if IsRetriableDbError(res0.Error) {
-				log.Info("DbFnWithRetry: retriable error detected (failcount=%v err=%s); will retry", attemptNumber, res0.Error)
+				log.Infof("DbFnWithRetry: retriable error detected (failcount=%v err=%s); will retry", attemptNumber, res0.Error)
 				attemptNumber += 1
 				time.Sleep(time.Duration(attemptNumber*10) * time.Millisecond)
 				continue
