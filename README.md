@@ -8,6 +8,15 @@
 
 Formerly known as `gigawatt-common'.
 
+### Requirements
+
+* Go version 1.6 or newer
+* Locally running postgres database for running the unit-tests.
+
+### Running the test suite
+
+    go test ./...
+
 ## TODO
 
 * [ ] Fix upstart serviceifier to pickup and preserve flags.
