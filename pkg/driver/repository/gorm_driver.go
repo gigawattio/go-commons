@@ -455,6 +455,45 @@ func (driver *GormRepositoryDriver) DbName() (name string, err error) {
 	return
 }
 
+func (driver *GormRepositoryDriver) RawRow(query string, args ...interface{}) (*sql.Row, error) {
+	var row *sql.Row
+
+	err := driver.withDb(func(db *gorm.DB) (err error) {
+		res := db.Raw(query, args...)
+		if err = res.Error; err != nil {
+			return
+		}
+
+		row = res.Row()
+		return
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gorm driver: raw-row- %s", err)
+	}
+	return row, nil
+}
+
+// RawRows Invoker is responsible for closing the returned rows set.
+func (driver *GormRepositoryDriver) RawRows(query string, args ...interface{}) (*sql.Rows, error) {
+	var rows *sql.Rows
+
+	err := driver.withDb(func(db *gorm.DB) (err error) {
+		res := db.Raw(query, args...)
+		if err = res.Error; err != nil {
+			return
+		}
+
+		if rows, err = res.Rows(); err != nil {
+			return
+		}
+		return
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gorm driver: raw-rows- %s", err)
+	}
+	return rows, nil
+}
+
 func (driver *GormRepositoryDriver) Raw(result interface{}, query string, args ...interface{}) error {
 	err := driver.withDb(func(db *gorm.DB) (err error) {
 		res := db.Raw(query, args...)

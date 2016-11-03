@@ -118,7 +118,7 @@ func initSchema(_ string, db *gorm.DB) error {
 
 var dbNameExpr = regexp.MustCompile(`dbname=[^ ]+`)
 
-func reset(t *testing.T, dbDriverName string, dbConnectionStrings []string) *GormRepositoryDriver {
+func reset(t *testing.T, dbDriverName string, dbConnectionStrings []string) (*GormRepositoryDriver, func()) {
 	patchedDbConnectionStrings := make([]string, len(dbConnectionStrings))
 	for i, dbConnectionString := range dbConnectionStrings {
 		// fmt.Fprintf(os.Stderr, "BEFORE: %s (AND crt=%v)\n", dbConnectionString, testlib.CurrentRunningTest())
@@ -134,11 +134,31 @@ func reset(t *testing.T, dbDriverName string, dbConnectionStrings []string) *Gor
 		t.Fatal(err)
 	}
 	driver.ConnectorFunc = DbConnectForTesting
-	return driver
+
+	cleanupFunc := func() {
+		if !t.Failed() {
+			if err := driver.Close(); err != nil {
+				t.Fatal(err)
+			}
+			driver, err := NewGormRepositoryDriver(dbDriverName, dbConnectionStrings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			driver.ConnectorFunc = DbConnectForTesting
+			if err := driver.Exec(`DROP DATABASE "` + testlib.CurrentRunningTest() + `"`); err != nil {
+				t.Fatalf("Error during cleanup: %s", err)
+			}
+			if err := driver.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return driver, cleanupFunc
 }
 
 func TestGetOrCreate(t *testing.T) {
-	driver := reset(t, dbDriverName, dbConnectionStrings)
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 	char1 := &MyDatum{Name: "Turd Ferguson"}
 	if _, err := driver.GetOrCreate(char1); err != nil {
 		t.Fatal(err)
@@ -160,7 +180,8 @@ func TestGetOrCreate(t *testing.T) {
 }
 
 func TestUpdateSingle(t *testing.T) {
-	driver := reset(t, dbDriverName, dbConnectionStrings)
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 	commonMeta := "single"
 	iggy := &MyDatum{Name: "Iggy Azalea", Metadata: commonMeta}
 	if err := driver.Save(iggy); err != nil {
@@ -186,7 +207,8 @@ func TestUpdateSingle(t *testing.T) {
 }
 
 func TestMultiDelete(t *testing.T) {
-	driver := reset(t, dbDriverName, dbConnectionStrings)
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 	testCases := [][]string{
 		[]string{"a"},
 		[]string{"a", "b"},
@@ -227,7 +249,8 @@ func TestMultiDelete(t *testing.T) {
 }
 
 func TestM2m(t *testing.T) {
-	driver := reset(t, dbDriverName, dbConnectionStrings)
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 
 	// Create and store some taggable items.
 	myDatums := []interface{}{}
@@ -293,11 +316,84 @@ func TestM2m(t *testing.T) {
 	}
 }
 
-func Tes_RawScans(t *testing.T) {
-	driver, err := NewGormRepositoryDriver(dbDriverName, dbConnectionStrings)
+func TestRawRow(t *testing.T) {
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
+
+	n := int64(49)
+	recs := make([]interface{}, n)
+	for i := int64(0); i < n; i++ {
+		recs[i] = &MyDatum{
+			Name:       fmt.Sprintf("Name%v", i),
+			HomePlanet: "Zurg",
+		}
+	}
+	if err := driver.SaveMultiple(recs...); err != nil {
+		t.Fatalf("Problem saving n=%v MyDatum records: %s", n, err)
+	}
+	row, err := driver.RawRow(`SELECT "id" FROM "my_datum" ORDER BY "id" DESC LIMIT 1`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var id int64
+	if err := row.Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if expected, actual := n, id; actual != expected {
+		t.Fatalf("Expected id=%v but actual=%v", expected, actual)
+	}
+}
+
+func TestRawRows(t *testing.T) {
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
+
+	n := int64(49)
+	recs := make([]interface{}, n)
+	for i := int64(0); i < n; i++ {
+		recs[i] = &MyDatum{
+			Name:       fmt.Sprintf("Name%v", i),
+			HomePlanet: "Zurg",
+		}
+	}
+	if err := driver.SaveMultiple(recs...); err != nil {
+		t.Fatalf("Problem saving n=%v MyDatum records: %s", n, err)
+	}
+	rows, err := driver.RawRows(`SELECT "id" FROM "my_datum"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	{
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if expected, actual := 1, len(cols); actual != expected {
+			t.Fatalf("Expected len(cols)=%v but actual=%v", expected, actual)
+		}
+	}
+
+	ids := []int64{}
+	for rows.Next() {
+		ids = append(ids, -1)
+		if err := rows.Scan(&ids[len(ids)-1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if expected, actual := n, int64(len(ids)); actual != expected {
+		t.Fatalf("Expected len(ids)=%v but actaul=%v", expected, actual)
+	}
+
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRawScans(t *testing.T) {
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 
 	// Ensure bad/invalid/mismatched queries emit errors.
 	{
@@ -414,7 +510,8 @@ func Tes_RawScans(t *testing.T) {
 }
 
 func TestRawQueries(t *testing.T) {
-	driver := reset(t, dbDriverName, dbConnectionStrings)
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 
 	n := 50
 	recs := make([]interface{}, n)
@@ -570,7 +667,8 @@ func TestRawQueries(t *testing.T) {
 }
 
 func TestTableName(t *testing.T) {
-	driver := reset(t, dbDriverName, dbConnectionStrings)
+	driver, cleanupFunc := reset(t, dbDriverName, dbConnectionStrings)
+	defer cleanupFunc()
 	if tableName := driver.TableName(&MyDatum{}); tableName != "my_datum" {
 		t.Errorf("Expected table name='my_datum' but actual='%v'", tableName)
 	}

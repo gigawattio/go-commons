@@ -1,5 +1,9 @@
 package repository
 
+import (
+	"database/sql"
+)
+
 // RepositoryDriver defines the interface that must be implemented by
 // data-store persistence drivers.
 type RepositoryDriver interface {
@@ -34,6 +38,8 @@ type RepositoryDriver interface {
 
 	CountWhere(query interface{}, args ...interface{}) (count int64, err error)
 
+	RawRow(query string, args ...interface{}) (*sql.Row, error)
+	RawRows(query string, args ...interface{}) (*sql.Rows, error)
 	Raw(result interface{}, query string, args ...interface{}) (err error)
 
 	Exec(query string, args ...interface{}) (err error)
