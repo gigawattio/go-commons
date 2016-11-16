@@ -1,3 +1,13 @@
+# IMPORTANT: This package has been split into individual packages and is thus deprecated.
+
+# Migration instructions:
+
+
+**Adjust imports from "github.com/gigawattio/go-commons/pkg/X" to "github.com/gigawattio/X".**
+
+**E.g. "github.com/gigawattio/go-commons/pkg/upstart" becomes "github.com/gigawattio/upstart".**
+
+
 # go-commons
 
 [![Documentation](https://godoc.org/github.com/gigawattio/go-commons?status.svg)](https://godoc.org/github.com/gigawattio/go-commons)
